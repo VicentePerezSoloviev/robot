@@ -6,13 +6,12 @@ print('### Script:', __file__)
 import math
 import sys
 import time
-
 import numpy as np
 import vrep
 
 SPEED = 1.2
-PREFERRED_DISTANCE = 0.4
-MINIMUM_COLISION = 0.1
+PREFERRED_DISTANCE = 0.8#0.4
+MINIMUM_COLISION = 0.18
 # --------------------------------------------------------------------------
 
 def getRobotHandles(clientID):
@@ -101,6 +100,15 @@ def getObjectDirection(blobs, coord):
 
 # --------------------------------------------------------------------------
 
+def getObjectDistance(blobs, coord):
+    distance = PREFERRED_DISTANCE
+
+    if blobs > 0:
+        distance = coord[1]
+    return distance
+
+# --------------------------------------------------------------------------
+
 def controlDirPID(lastDirError, errorDirSum, dirError):
     # Constants
     kp = 1.3
@@ -117,13 +125,8 @@ def controlDirPID(lastDirError, errorDirSum, dirError):
 def getSpeed(speed, changeDir, changeDist):
     speed += changeDist
 
-    if changeDir < 0:
-        lspeed = (1 + changeDir) * speed
-        rspeed = (1 - changeDir) * speed
-
-    else:
-        lspeed = (1 + changeDir) * speed
-        rspeed = (1 - changeDir) * speed
+    lspeed = (1 + changeDir) * speed
+    rspeed = (1 - changeDir) * speed
 
     return lspeed, rspeed
 
@@ -138,46 +141,73 @@ def getDistance(sonar):
 
 def controlDistancePID(lastDistanceError, errorDistanceSum, distanceError):
     # Constants
-    kp = 1.75
-    ki = 0.3
-    kd = 0.05
+    kp = 1.4
+    ki = 0.
+    kd = 0.
 
     # Algorithm PID
     change = kp * distanceError + ki * errorDistanceSum + kd * (lastDistanceError - distanceError)
-    print("p = ", distanceError)
-    print("i = ", errorDistanceSum)
-    print("d = ", (lastDistanceError - distanceError))
+    #print("p = ", distanceError)
+    #print("i = ", errorDistanceSum)
+    #print("d = ", (lastDistanceError - distanceError))
 
     return change
 
 # --------------------------------------------------------------------------
 
-def avoid(sonar):
-    if (sonar[3] < 0.1) or (sonar[4] < 0.1):
-        lspeed, rspeed = +0.3, -0.5
-    elif sonar[1] < 0.3:
-        lspeed, rspeed = +1.0, +0.3
-    elif sonar[5] < 0.2:
-        lspeed, rspeed = +0.2, +0.7
-    else:
-        lspeed, rspeed = +2.0, +2.0
+def colisionDetection(sonar, blobs):
+    lastMinimum = MINIMUM_COLISION
+    flag = False
+    lastSonar = 0
 
-    return lspeed, rspeed
+    for i in range(16):
+        if blobs==1 and i in (0, 1, 2, 3, 4, 5, 6, 7):
+            continue
+        else:
+            if sonar[i] <= lastMinimum:
+                lastMinimum = sonar[i]
+                lastSonar = i
+                flag = True
+
+    return flag, lastSonar
 
 # --------------------------------------------------------------------------
 
-def colisionDetection(sonar):
-    lastMinimum = MINIMUM_COLISION
-    flag = false
-    
-    for i in range(15):
-        if sonar[i] <= MINIMUM_COLISION:
-            lastMinimum = sonar[i]
-            flag = true
-    
-    return flag, sonar[i], i
-        
-    
+def getAvoidDirection(minSonarPosition, speed):
+
+    #    2  3  4  5
+    #  1            6
+    # 0              7
+    #       Sonar
+    #15              8
+    # 14            9
+    #   13 12 11 10
+
+    fitVar = 0.8
+    fitBackVar = 0.3
+    avoidProportion = 0
+    avoidSpeed = 0
+
+    print(minSonarPosition)
+    if minSonarPosition in (0, 1):
+        avoidProportion = -((minSonarPosition * (1/4) + 0.5) * fitVar)
+        avoidSpeed = -1.8 * speed
+    elif minSonarPosition in (6, 7):
+        avoidProportion = ((minSonarPosition - 5) * (1/4) + 0.5) * fitVar
+        avoidSpeed = -1.8 * speed
+    elif minSonarPosition in (8, 9, 10):
+        avoidProportion = -(((minSonarPosition - 8) * (1/4) + 0.5) * (fitVar - fitBackVar))
+    elif minSonarPosition in (13, 14, 15):
+        avoidProportion = ((minSonarPosition - 13) * (1/4) + 0.5) * (fitVar - fitBackVar)
+    elif minSonarPosition in (2, 3, 4, 5):
+        avoidSpeed = -1.8 * speed
+        avoidProportion = -1
+    else: # 11 12
+        avoidSpeed = speed
+
+    return avoidProportion, avoidSpeed
+
+# --------------------------------------------------------------------------
 
 def main():
     print('### Program started')
@@ -203,7 +233,7 @@ def main():
         errorDirSum = 0
         lastDistanceError = 0
         errorDistanceSum = 0
-        
+
         while vrep.simxGetConnectionId(clientID) != -1:
 
             # Perception
@@ -212,18 +242,17 @@ def main():
 
             blobs, coord = getImageBlob(clientID, hRobot)
             #print('###  ', blobs, coord)
-            
+
             # Planning
-            
-            flag, minSonarValue, minSonarPosition = colisionDetection(sonar)
-            
+
+            flag, minSonarPosition = colisionDetection(sonar, blobs)
+
             if flag:
-                #COLISION CONTROLLER 
-                print("holaa")
-                
+                #COLISION CONTROLLER
+                avoidProportion, avoidSpeed = getAvoidDirection(minSonarPosition, SPEED)
+                lspeed, rspeed = getSpeed(SPEED, avoidProportion, avoidSpeed)
             else:
                 #OTHER CONTROLLERS
-                
                 direction = getObjectDirection(blobs, coord)
                 dirError = direction - lastDir
                 errorDirSum += dirError
@@ -231,18 +260,18 @@ def main():
                 lastDirError = dirError
                 lastDir = direction
 
-                distance = getDistance(sonar)
-                distanceError = distance - PREFERRED_DISTANCE
+                distance = getObjectDistance(blobs, coord)#getDistance(sonar)
+                distanceError = -(distance - PREFERRED_DISTANCE)
+                print(distanceError)
                 errorDistanceSum += distanceError
                 changeDist = controlDistancePID(lastDistanceError, errorDistanceSum, distanceError)
+                print("Distance = ",distance)
+                print("Change = ",changeDist)
 
-                #print(changeDist)
-                #lspeed, rspeed = avoid(sonar)
-                
                 lspeed, rspeed = getSpeed(SPEED, changeDir, changeDist)
                 #print("l = %f, r = %f" % (lspeed, rspeed))
                 #print("Lspeed = %f, Rspeed = %f, direction = %f, change = %f" % (lspeed, rspeed, direction, change))
-            
+
             # Action
             setSpeed(clientID, hRobot, lspeed, rspeed)
             time.sleep(0.1)
@@ -250,7 +279,7 @@ def main():
         print('### Finishing...')
         vrep.simxFinish(clientID)
 
-    print ('### Program ended')
+    print('### Program ended')
 
 # --------------------------------------------------------------------------
 
