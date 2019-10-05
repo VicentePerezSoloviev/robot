@@ -9,9 +9,9 @@ import time
 import numpy as np
 import vrep
 
-SPEED = 1.2
-PREFERRED_DISTANCE = 0.8#0.4
-MINIMUM_COLISION = 0.18
+SPEED = 1.5
+PREFERRED_DISTANCE = 0.25
+MINIMUM_COLISION = 0.15
 # --------------------------------------------------------------------------
 
 def getRobotHandles(clientID):
@@ -94,6 +94,7 @@ def getImageBlob(clientID, hRobot):
 
 def getObjectDirection(blobs, coord):
     direction = 0
+
     if blobs > 0:
         direction = coord[0] * 2 - 1
     return direction
@@ -111,12 +112,16 @@ def getObjectDistance(blobs, coord):
 
 def controlDirPID(lastDirError, errorDirSum, dirError):
     # Constants
-    kp = 1.3
-    ki = 0.8 #0.6
-    kd = 0.22 #0.32
+    kp = 1.5
+    ki = 0.8
+    kd = 0.7
 
     # Algorithm PID
     change = kp * dirError + ki * errorDirSum + kd * (lastDirError - dirError)
+    #print("p = ", dirError)
+    #print("i = ", errorDirSum)
+    #print("d = ", lastDirError - dirError)
+
 
     return change
 
@@ -124,6 +129,15 @@ def controlDirPID(lastDirError, errorDirSum, dirError):
 
 def getSpeed(speed, changeDir, changeDist):
     speed += changeDist
+    alpha = 0.8
+
+    #print("PreChangeDir = ", changeDir)
+    # Exponential function
+    if changeDist >= -SPEED:
+        changeDir *= alpha ** (changeDist + SPEED)
+    else:
+        changeDir *= alpha ** (-changeDist - SPEED)
+    #print("PreChangeDir = ", changeDir)
 
     lspeed = (1 + changeDir) * speed
     rspeed = (1 - changeDir) * speed
@@ -141,9 +155,9 @@ def getDistance(sonar):
 
 def controlDistancePID(lastDistanceError, errorDistanceSum, distanceError):
     # Constants
-    kp = 1.4
-    ki = 0.
-    kd = 0.
+    kp = 2
+    ki = 0.05
+    kd = 0.2
 
     # Algorithm PID
     change = kp * distanceError + ki * errorDistanceSum + kd * (lastDistanceError - distanceError)
@@ -161,7 +175,8 @@ def colisionDetection(sonar, blobs):
     lastSonar = 0
 
     for i in range(16):
-        if blobs==1 and i in (0, 1, 2, 3, 4, 5, 6, 7):
+        # If the robot is following the ball deactivate the frontal sonar sensors
+        if blobs==1 and i in (2, 3, 4, 5):
             continue
         else:
             if sonar[i] <= lastMinimum:
@@ -183,27 +198,54 @@ def getAvoidDirection(minSonarPosition, speed):
     # 14            9
     #   13 12 11 10
 
-    fitVar = 0.8
-    fitBackVar = 0.3
     avoidProportion = 0
     avoidSpeed = 0
 
-    print(minSonarPosition)
-    if minSonarPosition in (0, 1):
-        avoidProportion = -((minSonarPosition * (1/4) + 0.5) * fitVar)
-        avoidSpeed = -1.8 * speed
-    elif minSonarPosition in (6, 7):
-        avoidProportion = ((minSonarPosition - 5) * (1/4) + 0.5) * fitVar
-        avoidSpeed = -1.8 * speed
-    elif minSonarPosition in (8, 9, 10):
-        avoidProportion = -(((minSonarPosition - 8) * (1/4) + 0.5) * (fitVar - fitBackVar))
-    elif minSonarPosition in (13, 14, 15):
-        avoidProportion = ((minSonarPosition - 13) * (1/4) + 0.5) * (fitVar - fitBackVar)
-    elif minSonarPosition in (2, 3, 4, 5):
-        avoidSpeed = -1.8 * speed
-        avoidProportion = -1
-    else: # 11 12
-        avoidSpeed = speed
+    case0_7 = -0.4
+    case1_6 = -0.6
+    case2_5 = -0.85
+    case3_4 = 1.1
+    case15_8 = 0.1
+    case14_9 = 0.2
+    case13_10 = 0.1
+    #case11_12 = 0
+
+    print("Sonar ",minSonarPosition)
+    if minSonarPosition == 0:
+        avoidProportion = case0_7
+        avoidSpeed = SPEED * -2
+    elif minSonarPosition == 1:
+        avoidProportion = case1_6
+        avoidSpeed = SPEED * -2
+    elif minSonarPosition == 2:
+        avoidProportion = case2_5
+        avoidSpeed = SPEED * -2
+    elif minSonarPosition in (3, 4):
+        avoidProportion = case3_4
+        avoidSpeed = SPEED * -2
+    elif minSonarPosition == 5:
+        avoidProportion = - case2_5
+        avoidSpeed = SPEED * -2
+    elif minSonarPosition == 6:
+        avoidProportion = - case1_6
+        avoidSpeed = SPEED * -2
+    elif minSonarPosition == 7:
+        avoidProportion = - case0_7
+        avoidSpeed = SPEED * -2
+    elif minSonarPosition == 8:
+        avoidProportion = - case15_8
+    elif minSonarPosition == 9:
+        avoidProportion = - case14_9
+    elif minSonarPosition == 10:
+        avoidProportion = - case13_10
+    elif minSonarPosition in (11, 12):
+        avoidSpeed *= -2
+    elif minSonarPosition == 13:
+        avoidProportion = case13_10
+    elif minSonarPosition == 14:
+        avoidProportion = case14_9
+    else: # 15
+        avoidProportion = case15_8
 
     return avoidProportion, avoidSpeed
 
@@ -259,14 +301,18 @@ def main():
                 changeDir = controlDirPID(lastDirError, errorDirSum, dirError)
                 lastDirError = dirError
                 lastDir = direction
+                print("changeDir = ", changeDir)
 
-                distance = getObjectDistance(blobs, coord)#getDistance(sonar)
-                distanceError = -(distance - PREFERRED_DISTANCE)
-                print(distanceError)
+                #distance = getObjectDistance(blobs, coord)
+                distance = getDistance(sonar)
+                if blobs > 0:
+                    distanceError = (distance - PREFERRED_DISTANCE)
+                else:
+                    distanceError = 0
                 errorDistanceSum += distanceError
                 changeDist = controlDistancePID(lastDistanceError, errorDistanceSum, distanceError)
-                print("Distance = ",distance)
-                print("Change = ",changeDist)
+                #print("Distance = ",distance)
+                #print("ChangeDist = ",changeDist)
 
                 lspeed, rspeed = getSpeed(SPEED, changeDir, changeDist)
                 #print("l = %f, r = %f" % (lspeed, rspeed))
